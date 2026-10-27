@@ -1,0 +1,73 @@
+/* Shared navigation for the preserved Audio8 listening pages. */
+.version-bar {
+  color: #253b38;
+  background: #fff;
+  border-bottom: 1px solid #dfe9e6;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.version-inner {
+  display: flex;
+  min-height: 78px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-block: 15px;
+}
+.version-brand {
+  color: #183b35;
+  font-size: 18px;
+  font-weight: 750;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.version-brand span {
+  display: block;
+  color: #71817d;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .02em;
+}
+.version-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid #e2ebe8;
+  border-radius: 14px;
+  background: #f5f8f7;
+}
+.version-switcher a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 13px;
+  border-radius: 10px;
+  color: #52645e;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.version-switcher a span { font-size: 11px; opacity: .8; }
+.version-switcher a:hover { color: #087f72; background: #e7f0ed; }
+.version-switcher a[aria-current="page"] { color: #fff; background: #087f72; }
+.version-bar a:focus-visible, .version-resources a:focus-visible {
+  outline: 3px solid #087f72;
+  outline-offset: 4px;
+}
+.version-resources { display: flex; flex-wrap: wrap; gap: 8px; }
+.version-resources .repo-link { border-radius: 8px; }
+.version-resources .repo-link:first-child { background: #087f72; }
+.version-resources .repo-link:first-child:hover { background: #06665b; }
+@media (max-width: 680px) {
+  .version-inner { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .version-brand span { display: inline; margin-left: 9px; }
+  .version-switcher { width: 100%; }
+  .version-switcher a { flex: 1; justify-content: center; padding-inline: 8px; }
+  .version-resources { margin-top: 16px; }
+  .version-resources .repo-link { margin-top: 0; }
+}
+@media (max-width: 360px) {
+  .version-switcher a { flex-direction: column; gap: 0; font-size: 12px; }
+}
