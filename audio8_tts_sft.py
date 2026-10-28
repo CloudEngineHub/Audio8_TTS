@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supervised fine-tuning for audio8_tts Preview."""
+"""Supervised fine-tuning for audio8_tts 0.6B and 0.1B models."""
 
 from __future__ import annotations
 
@@ -9,12 +9,11 @@ import math
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset
 from torch.utils.checkpoint import checkpoint
+from torch.utils.data import Dataset
 from transformers import AutoModel, AutoProcessor, HfArgumentParser, Trainer, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
@@ -27,7 +26,6 @@ from audio8_tts_data import (
     resolve_manifest_path,
     validate_sample_id,
 )
-
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -176,7 +174,14 @@ def actual_model(model: torch.nn.Module) -> torch.nn.Module:
 
 def set_trainable_modules(model: torch.nn.Module, *, freeze_slow: bool, freeze_fast: bool) -> None:
     """Freeze complete AR branches while preserving the requested branch."""
-    slow_prefixes = ("embeddings.", "codebook_embeddings.", "layers.", "norm.")
+    slow_prefixes = (
+        "embeddings.",
+        "codebook_embeddings.",
+        "layers.",
+        "norm.",
+        "slow.",
+        "semantic_output.",
+    )
     fast_prefixes = (
         "fast_project_in.",
         "fast_embeddings.",
@@ -189,11 +194,33 @@ def set_trainable_modules(model: torch.nn.Module, *, freeze_slow: bool, freeze_f
             parameter.requires_grad = False
         if freeze_fast and name.startswith(fast_prefixes):
             parameter.requires_grad = False
-    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    trainable = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
     total = sum(parameter.numel() for parameter in model.parameters())
     if trainable == 0:
         raise ValueError("freeze_slow_ar and freeze_fast_ar leave no trainable parameters")
     LOGGER.info("Trainable parameters: %s / %s (%.2f%%)", trainable, total, 100 * trainable / total)
+
+
+def slow_loss_targets(labels: torch.Tensor, config, num_classes: int) -> torch.Tensor:
+    """Adapt global token IDs to the model's slow output space, without changing inputs."""
+    if num_classes == int(config.vocab_size):
+        # The 0.6B head predicts the complete vocabulary, including EOS/newline.
+        return labels
+    if num_classes != int(config.codebook_size) + 1:
+        raise ValueError(
+            f"Unsupported slow output size {num_classes}: expected full vocabulary "
+            f"({config.vocab_size}) or semantic tokens plus EOS ({config.codebook_size + 1})"
+        )
+
+    # The 0.1B head predicts only codec semantics and EOS. Keep the original
+    # labels for semantic frame selection and teacher forcing of the fast AR.
+    targets = torch.full_like(labels, -100)
+    semantic = labels.ge(int(config.semantic_begin_id)) & labels.le(int(config.semantic_end_id))
+    targets[semantic] = labels[semantic] - int(config.semantic_begin_id)
+    targets[labels.eq(int(config.eos_token_id))] = int(config.codebook_size)
+    return targets
 
 
 def fast_codebook_logits(
@@ -226,6 +253,9 @@ class Audio8TTSTrainer(Trainer):
 
     def __init__(self, *args, slow_loss_weight: float, fast_loss_weight: float, **kwargs):
         super().__init__(*args, **kwargs)
+        # Both custom losses are microbatch means; compute_loss does not use
+        # num_items_in_batch. Let Trainer normalize gradient accumulation.
+        self.model_accepts_loss_kwargs = False
         self.slow_loss_weight = float(slow_loss_weight)
         self.fast_loss_weight = float(fast_loss_weight)
         self._metric_sums: dict[str, float] = {}
@@ -258,9 +288,10 @@ class Audio8TTSTrainer(Trainer):
         outputs = model(**inputs, return_dict=True)
         core = actual_model(model)
 
+        slow_targets = slow_loss_targets(labels[:, 0], core.config, outputs.logits.shape[-1])
         slow_loss = F.cross_entropy(
             outputs.logits.reshape(-1, outputs.logits.shape[-1]),
-            labels[:, 0].reshape(-1),
+            slow_targets.reshape(-1),
             ignore_index=-100,
         )
         semantic_mask = labels[:, 0].ge(int(core.config.semantic_begin_id)) & labels[
@@ -286,8 +317,9 @@ class Audio8TTSTrainer(Trainer):
             )
 
         with torch.no_grad():
-            slow_labels = labels[:, 0][labels[:, 0].ne(-100)]
-            slow_predictions = outputs.logits[labels[:, 0].ne(-100)].argmax(dim=-1)
+            supervised = slow_targets.ne(-100)
+            slow_labels = slow_targets[supervised]
+            slow_predictions = outputs.logits[supervised].argmax(dim=-1)
             slow_accuracy = slow_predictions.eq(slow_labels).float().mean()
             fast_accuracy = codebook_logits.argmax(dim=-1).eq(codebooks).float().mean()
         self._record_metrics(
@@ -364,6 +396,11 @@ def main() -> None:
         raise ValueError(
             f"--max_length={model_args.max_length} exceeds the model context "
             f"limit {model.config.max_seq_len}"
+        )
+    if training_args.gradient_checkpointing and not model.supports_gradient_checkpointing:
+        raise ValueError(
+            "This model does not support gradient checkpointing. "
+            "Set GRADIENT_CHECKPOINTING=false or pass --gradient_checkpointing false."
         )
     model.config.use_gradient_checkpointing = bool(training_args.gradient_checkpointing)
     set_trainable_modules(

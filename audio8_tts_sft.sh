@@ -21,6 +21,35 @@ if [[ -z "${TRAIN_JSONL}" ]]; then
   exit 2
 fi
 
+# Appended Transformers arguments override the environment, as before. Validate
+# the effective path so an explicit --deepspeed can replace a missing default.
+deepspeed_config="${DEEPSPEED_CONFIG:-${PROJECT_ROOT}/configs/deepspeed_zero2.json}"
+expect_deepspeed_config=false
+for arg in "$@"; do
+  if [[ "${expect_deepspeed_config}" == true ]]; then
+    if [[ -z "${arg}" || "${arg}" == --* ]]; then
+      echo "--deepspeed requires a JSON config file path." >&2
+      exit 2
+    fi
+    deepspeed_config="${arg}"
+    expect_deepspeed_config=false
+  else
+    case "${arg}" in
+      --deepspeed) expect_deepspeed_config=true ;;
+      --deepspeed=*) deepspeed_config="${arg#--deepspeed=}" ;;
+    esac
+  fi
+done
+if [[ "${expect_deepspeed_config}" == true ]]; then
+  echo "--deepspeed requires a JSON config file path." >&2
+  exit 2
+fi
+if [[ ! -f "${deepspeed_config}" || ! -r "${deepspeed_config}" ]]; then
+  echo "DeepSpeed config is not a readable file: ${deepspeed_config}" >&2
+  echo "Set DEEPSPEED_CONFIG or append --deepspeed with a valid JSON config path." >&2
+  exit 2
+fi
+
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
@@ -57,12 +86,12 @@ fi
   --save_total_limit "${SAVE_TOTAL_LIMIT:-3}" \
   --dataloader_num_workers "${DATALOADER_NUM_WORKERS:-0}" \
   --bf16 "${BF16:-true}" \
-  --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-true}" \
+  --gradient_checkpointing "${GRADIENT_CHECKPOINTING:-false}" \
   --freeze_slow_ar "${FREEZE_SLOW_AR:-false}" \
   --freeze_fast_ar "${FREEZE_FAST_AR:-false}" \
   --resume_mode "${RESUME_MODE:-none}" \
   --report_to "${REPORT_TO:-tensorboard}" \
   --remove_unused_columns false \
-  --deepspeed "${DEEPSPEED_CONFIG:-${PROJECT_ROOT}/configs/deepspeed_zero2.json}" \
+  --deepspeed "${deepspeed_config}" \
   "${training_args[@]}" \
   "$@"
